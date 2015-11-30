@@ -1,8 +1,12 @@
 package com.platypus.com.platypus.crw.udp;
 
+import com.platypus.crw.AsyncVehicleServer;
+import com.platypus.crw.FunctionObserver;
 import com.platypus.crw.udp.UdpConstants;
 import com.platypus.crw.udp.UdpServer;
 import com.platypus.crw.udp.UdpServer.Request;
+import com.platypus.crw.udp.UdpVehicleServer;
+import com.platypus.crw.udp.UdpVehicleService;
 
 import java.io.IOException;
 import java.net.*;
@@ -13,7 +17,6 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Timer;
 import java.util.TimerTask;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -28,7 +31,6 @@ public class VehicleTunnelService {
     private static final Logger logger = Logger.getLogger(VehicleTunnelService.class.getName());
 
     public static final int DEFAULT_UDP_PORT = 6077;
-    public static final int IPTOS_LOWDELAY = 0x10;
 
     protected final UdpServer _udpServer;
     protected final Timer _registrationTimer = new Timer();
@@ -37,14 +39,18 @@ public class VehicleTunnelService {
     protected static class Client {
         int ttl;
         String name;
-        AtomicReference<SocketAddress> vehicleAddr = new AtomicReference<>();
-        AtomicReference<SocketAddress> controllerAddr = new AtomicReference<>();
+        UdpVehicleProxy vehicle;
+        UdpVehicleService tunnel;
+        InetSocketAddress tunnelAddr;
+    }
 
-        InetSocketAddress tunnelToVehicleAddr;
-        DatagramSocket tunnelToVehicle;
-
-        InetSocketAddress tunnelToControllerAddr;
-        DatagramSocket tunnelToController;
+    /**
+     * A thin wrapper class to expose the local socket address used for this UdpVehicleServer.
+     */
+    protected static class UdpVehicleProxy extends UdpVehicleServer {
+        public InetSocketAddress getLocalSocketAddress() {
+            return (InetSocketAddress)this._udpServer.getSocketAddress();
+        }
     }
 
     public VehicleTunnelService() {
@@ -61,37 +67,11 @@ public class VehicleTunnelService {
 
     public void shutdown() {
         _udpServer.stop();
-    }
 
-    private final class TunnelHandler implements Runnable {
-        private final DatagramSocket _source;
-        private final DatagramSocket _tunnel;
-        private final AtomicReference<SocketAddress> _destination;
-
-        public TunnelHandler(DatagramSocket source, DatagramSocket tunnel,
-                             AtomicReference<SocketAddress> destination) {
-            _source = source;
-            _tunnel = tunnel;
-            _destination = destination;
-        }
-
-        @Override
-        public void run() {
-            final byte[] buffer = new byte[UdpConstants.MAX_PACKET_SIZE];
-            final DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-
-            try {
-                _source.receive(packet);
-                logger.info("Forwarding [" + packet.getLength() + "]: " +
-                        packet.getSocketAddress() + " -> " +
-                        _source.getLocalPort() + " : " +
-                        _tunnel.getLocalPort() + " -> " +
-                        _destination.get());
-                packet.setSocketAddress(_destination.get());
-                _tunnel.send(packet);
-
-            } catch (IOException e) {
-                logger.severe("Error on tunnel '" + _destination.get() + "': " + e);
+        synchronized(_clients) {
+            for (Client client : _clients.values()) {
+                client.tunnel.shutdown();
+                client.vehicle.shutdown();
             }
         }
     }
@@ -112,38 +92,16 @@ public class VehicleTunnelService {
                             // If not found, create a new entry
                             if (c == null) {
                                 c = new Client();
-
-                                try {
-                                    // Create a tunnel from the controller to the vehicle.
-                                    c.tunnelToVehicle = new DatagramSocket();
-                                    c.tunnelToVehicle.setSendBufferSize(UdpConstants.MAX_PACKET_SIZE);
-                                    c.tunnelToVehicle.setTrafficClass(IPTOS_LOWDELAY);
-                                    c.tunnelToVehicleAddr = new InetSocketAddress(
-                                            InetAddress.getLocalHost(), c.tunnelToVehicle.getLocalPort());
-
-                                    // Create a tunnel from the vehicle to the controller.
-                                    c.tunnelToController = new DatagramSocket();
-                                    c.tunnelToController.setSendBufferSize(UdpConstants.MAX_PACKET_SIZE);
-                                    c.tunnelToController.setTrafficClass(IPTOS_LOWDELAY);
-                                    c.tunnelToControllerAddr = new InetSocketAddress(
-                                            InetAddress.getLocalHost(), c.tunnelToController.getLocalPort());
-
-                                    // Start threads that forward packets across the tunnel.
-                                    new Thread(new TunnelHandler(c.tunnelToVehicle, c.tunnelToController,
-                                                                 c.vehicleAddr)).start();
-                                    new Thread(new TunnelHandler(c.tunnelToController, c.tunnelToVehicle,
-                                                                 c.controllerAddr)).start();
-                                } catch (SocketException e) {
-                                    logger.severe("Unable to open UDP sockets.");
-                                    throw new RuntimeException("Unable to open UDP sockets.", e);
-                                }
-
-
+                                c.vehicle = new UdpVehicleProxy();
+                                c.tunnel = new UdpVehicleService(AsyncVehicleServer.Util.toSync(c.vehicle));
+                                c.tunnelAddr = new InetSocketAddress(
+                                        InetAddress.getLocalHost(),
+                                        ((InetSocketAddress)c.tunnel.getSocketAddress()).getPort());
                                 _clients.put(req.source, c);
                             }
 
                             // Update the registration properties for this client.
-                            c.vehicleAddr.set(req.source);
+                            c.vehicle.setVehicleService(req.source);
                             c.name = req.stream.readUTF();
                             c.ttl = UdpConstants.REGISTRATION_TIMEOUT_COUNT;
                         }
@@ -159,7 +117,7 @@ public class VehicleTunnelService {
                         Client c = null;
                         synchronized(_clients) {
                             for (Map.Entry<SocketAddress, Client> e : _clients.entrySet()) {
-                                if (e.getValue().tunnelToVehicleAddr.equals(addr)) {
+                                if (e.getValue().tunnelAddr.equals(addr)) {
                                     c = e.getValue();
                                     break;
                                 }
@@ -174,17 +132,15 @@ public class VehicleTunnelService {
 
                         logger.info("Connection request for: " +
                                 req.source + " -> " +
-                                c.tunnelToVehicleAddr.getPort() + " : " +
-                                c.tunnelToControllerAddr.getPort() + " -> " +
-                                c.vehicleAddr.get());
+                                c.tunnelAddr.getPort() + " -> " +
+                                c.vehicle.getVehicleService());
 
                         // Forward this connection request to the server in question.
                         synchronized(c) {
-                            c.controllerAddr.set(req.source);
-                            UdpServer.Response respCon = new UdpServer.Response(req.ticket, c.vehicleAddr.get());
+                            UdpServer.Response respCon = new UdpServer.Response(req.ticket, c.vehicle.getVehicleService());
                             respCon.stream.writeUTF(command);
-                            respCon.stream.writeUTF(c.tunnelToControllerAddr.getAddress().getHostAddress());
-                            respCon.stream.writeInt(c.tunnelToControllerAddr.getPort());
+                            respCon.stream.writeUTF(InetAddress.getLocalHost().getHostAddress());
+                            respCon.stream.writeInt(c.vehicle.getLocalSocketAddress().getPort());
                             _udpServer.respond(respCon);
                         }
                         break;
@@ -199,8 +155,8 @@ public class VehicleTunnelService {
                             respList.stream.writeInt(_clients.size());
                             for (Map.Entry<SocketAddress, Client> e : _clients.entrySet()) {
                                 respList.stream.writeUTF(e.getValue().name);
-                                respList.stream.writeUTF(e.getValue().tunnelToVehicleAddr.getAddress().getHostAddress());
-                                respList.stream.writeInt(e.getValue().tunnelToVehicleAddr.getPort());
+                                respList.stream.writeUTF(e.getValue().tunnelAddr.getHostString());
+                                respList.stream.writeInt(e.getValue().tunnelAddr.getPort());
                             }
                         }
                         _udpServer.respond(respList);
@@ -257,18 +213,18 @@ public class VehicleTunnelService {
     protected TimerTask _registrationTask = new TimerTask() {
         @Override
         public void run() {
-            synchronized(_clients) {
-                for (Iterator<Map.Entry<SocketAddress, Client>> it = _clients.entrySet().iterator(); it.hasNext();) {
-                    Map.Entry<SocketAddress, Client> client = it.next();
-                    if (client.getValue().ttl == 0) {
-                        client.getValue().tunnelToVehicle.close();
-                        client.getValue().tunnelToController.close();
-                        it.remove();
-                    } else {
-                        client.getValue().ttl--;
-                    }
+        synchronized(_clients) {
+            for (Iterator<Map.Entry<SocketAddress, Client>> it = _clients.entrySet().iterator(); it.hasNext();) {
+                Map.Entry<SocketAddress, Client> client = it.next();
+                if (client.getValue().ttl == 0) {
+                    client.getValue().tunnel.shutdown();
+                    client.getValue().vehicle.shutdown();
+                    it.remove();
+                } else {
+                    client.getValue().ttl--;
                 }
             }
+        }
         }
     };
 
@@ -282,7 +238,7 @@ public class VehicleTunnelService {
 
         synchronized(_clients) {
             for (Client client : _clients.values()) {
-                map.put(client.vehicleAddr.get(), client.name);
+                map.put(client.vehicle.getVehicleService(), client.name);
             }
         }
 
