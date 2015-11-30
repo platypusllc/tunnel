@@ -1,6 +1,5 @@
 package com.platypus;
 
-import com.platypus.crw.AsyncVehicleServer;
 import com.platypus.crw.FunctionObserver;
 import com.platypus.crw.SimpleBoatSimulator;
 import com.platypus.crw.udp.UdpVehicleServer;
@@ -8,7 +7,6 @@ import com.platypus.crw.udp.UdpVehicleService;
 import com.platypus.crw.udp.VehicleRegistryService;
 
 import java.net.InetSocketAddress;
-import java.net.Socket;
 import java.net.SocketAddress;
 import java.util.Map;
 
@@ -17,7 +15,7 @@ public class Main {
     public static void main(String[] args) throws InterruptedException {
         // Register with the default "registry.senseplatypus.com" server.
         InetSocketAddress registryAddress = new InetSocketAddress(
-                "localhost", VehicleRegistryService.DEFAULT_UDP_PORT);
+                "tunnel.senseplatypus.com", VehicleRegistryService.DEFAULT_UDP_PORT);
 
         // Create a *fake* vehicle and connect it to the registry.
         SimpleBoatSimulator sim = new SimpleBoatSimulator();

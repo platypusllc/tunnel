@@ -1,12 +1,7 @@
-package com.platypus.com.platypus.crw.udp;
+package com.platypus.crw.udp;
 
 import com.platypus.crw.AsyncVehicleServer;
-import com.platypus.crw.FunctionObserver;
-import com.platypus.crw.udp.UdpConstants;
-import com.platypus.crw.udp.UdpServer;
 import com.platypus.crw.udp.UdpServer.Request;
-import com.platypus.crw.udp.UdpVehicleServer;
-import com.platypus.crw.udp.UdpVehicleService;
 
 import java.io.IOException;
 import java.net.*;
@@ -21,9 +16,12 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Standalone service for supporting vehicle registration for UDP communication.
+ * Standalone tunnel for forwarding vehicle data between two firewalled clients.
+ * Clients that use this address for a registry will receive the address of a proxy
+ * hosted on this machine.  The proxy will forward requests to the true vehicle server.
  *
- * Should be run standalone on a publicly visible server.
+ * This class should be run standalone on a publicly visible server with accessible UDP ports.
+ * This is necessary for tunnels to be established from the vehicle server and client.
  *
  * @author Prasanna Velagapudi <psigen@gmail.com>
  */
@@ -32,6 +30,7 @@ public class VehicleTunnelService {
 
     public static final int DEFAULT_UDP_PORT = 6077;
 
+    protected final String _hostname;
     protected final UdpServer _udpServer;
     protected final Timer _registrationTimer = new Timer();
     protected final Map<SocketAddress, Client> _clients = new LinkedHashMap<>();
@@ -53,11 +52,31 @@ public class VehicleTunnelService {
         }
     }
 
-    public VehicleTunnelService() {
-        this(DEFAULT_UDP_PORT);
+    /**
+     * Default constructor that starts a server using the default localhost address and port (6077).
+     *
+     * This constructor is NOT recommended, as the address on which the server is accessible may not
+     * be introspectable, in which case the server will broadcast the wrong connection address.
+     *
+     * It is better to explicitly specify the hostname that the server should send to clients.
+     *
+     * @throws UnknownHostException
+     */
+    public VehicleTunnelService() throws UnknownHostException {
+        this(InetAddress.getLocalHost().getHostAddress(), DEFAULT_UDP_PORT);
     }
 
-    public VehicleTunnelService(int udpPort) {
+    /**
+     * Starts the server using the specified hostname and port.
+     *
+     * The provided hostname will be used by clients to create connections back to this server, so a
+     * publicly-reachable hostname or address is required.
+     *
+     * @param hostname
+     * @param udpPort
+     */
+    public VehicleTunnelService(String hostname, int udpPort) {
+        _hostname = hostname;
         _udpServer = new UdpServer(udpPort);
         _udpServer.setHandler(_handler);
         _udpServer.start();
@@ -65,6 +84,9 @@ public class VehicleTunnelService {
         _registrationTimer.scheduleAtFixedRate(_registrationTask, 0, UdpConstants.REGISTRATION_RATE_MS);
     }
 
+    /**
+     * Shuts down this server.  It cannot be restarted after this.
+     */
     public void shutdown() {
         _udpServer.stop();
 
@@ -94,8 +116,7 @@ public class VehicleTunnelService {
                                 c = new Client();
                                 c.vehicle = new UdpVehicleProxy();
                                 c.tunnel = new UdpVehicleService(AsyncVehicleServer.Util.toSync(c.vehicle));
-                                c.tunnelAddr = new InetSocketAddress(
-                                        InetAddress.getLocalHost(),
+                                c.tunnelAddr = new InetSocketAddress(_hostname,
                                         ((InetSocketAddress)c.tunnel.getSocketAddress()).getPort());
                                 _clients.put(req.source, c);
                             }
@@ -139,7 +160,7 @@ public class VehicleTunnelService {
                         synchronized(c) {
                             UdpServer.Response respCon = new UdpServer.Response(req.ticket, c.vehicle.getVehicleService());
                             respCon.stream.writeUTF(command);
-                            respCon.stream.writeUTF(InetAddress.getLocalHost().getHostAddress());
+                            respCon.stream.writeUTF(_hostname);
                             respCon.stream.writeInt(c.vehicle.getLocalSocketAddress().getPort());
                             _udpServer.respond(respCon);
                         }
@@ -155,7 +176,7 @@ public class VehicleTunnelService {
                             respList.stream.writeInt(_clients.size());
                             for (Map.Entry<SocketAddress, Client> e : _clients.entrySet()) {
                                 respList.stream.writeUTF(e.getValue().name);
-                                respList.stream.writeUTF(e.getValue().tunnelAddr.getHostString());
+                                respList.stream.writeUTF(_hostname);
                                 respList.stream.writeInt(e.getValue().tunnelAddr.getPort());
                             }
                         }
@@ -229,9 +250,12 @@ public class VehicleTunnelService {
     };
 
     /**
-     * Returns a map containing the current set of clients.
+     * Returns a map containing the current set of registered vehicles.
      *
-     * @return a map from the socket address of clients to their text names
+     * This list contains the true addresses of vehicles, <b>not their tunnel proxy addresses</b>.  It is intended for
+     * debugging, and should not be used to retrieve addresses for client use.
+     *
+     * @return a map from the socket address of clients (vehicles) to their text names
      */
     public Map<SocketAddress, String> getClients() {
         HashMap<SocketAddress, String> map = new LinkedHashMap<>();
@@ -252,9 +276,11 @@ public class VehicleTunnelService {
      * @param args takes a UDP port number as the first argument.
      */
     public static void main(String args[]) throws UnknownHostException {
-        final int port = (args.length > 0) ? Integer.parseInt(args[0]) : DEFAULT_UDP_PORT;
-        final VehicleTunnelService service = new VehicleTunnelService();
-        System.out.println("Started vehicle tunnel: " + InetAddress.getLocalHost() + ":" + port);
+        final String hostname = (args.length > 0) ? args[0] : InetAddress.getLocalHost().getHostAddress();
+        final int port = (args.length > 1) ? Integer.parseInt(args[1]) : DEFAULT_UDP_PORT;
+
+        final VehicleTunnelService service = new VehicleTunnelService(hostname, port);
+        System.out.println("Started vehicle tunnel: " + hostname + ":" + port);
 
         // Periodically print the registered clients
         Timer printer = new Timer();
