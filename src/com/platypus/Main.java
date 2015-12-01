@@ -15,7 +15,7 @@ public class Main {
     public static void main(String[] args) throws InterruptedException {
         // Register with the default "registry.senseplatypus.com" server.
         InetSocketAddress registryAddress = new InetSocketAddress(
-                "tunnel.senseplatypus.com", VehicleRegistryService.DEFAULT_UDP_PORT);
+                "localhost", VehicleRegistryService.DEFAULT_UDP_PORT);
 
         // Create a *fake* vehicle and connect it to the registry.
         SimpleBoatSimulator sim = new SimpleBoatSimulator();
@@ -35,7 +35,7 @@ public class Main {
 
         // Loop forever printing connections on the dummy GUI.
         while (true) {
-            Thread.sleep(1000);
+            Thread.sleep(2000);
             server.getVehicleServices(new FunctionObserver<Map<SocketAddress, String>>() {
                 @Override
                 public void completed(final Map<SocketAddress, String> socketAddressStringMap) {
