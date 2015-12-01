@@ -1,6 +1,5 @@
 package com.platypus.crw.udp;
 
-import com.platypus.crw.AsyncVehicleServer;
 import com.platypus.crw.udp.UdpServer.Request;
 
 import java.io.IOException;
@@ -39,7 +38,7 @@ public class VehicleTunnelService {
         int ttl;
         String name;
         UdpVehicleProxy vehicle;
-        UdpVehicleService tunnel;
+        UdpVehicleService2 tunnel;
         InetSocketAddress tunnelAddr;
     }
 
@@ -115,14 +114,15 @@ public class VehicleTunnelService {
                             if (c == null) {
                                 c = new Client();
                                 c.vehicle = new UdpVehicleProxy();
-                                c.tunnel = new UdpVehicleService(AsyncVehicleServer.Util.toSync(c.vehicle));
+                                c.tunnel = new UdpVehicleService2(c.vehicle);
                                 c.tunnelAddr = new InetSocketAddress(_hostname,
                                         ((InetSocketAddress)c.tunnel.getSocketAddress()).getPort());
                                 _clients.put(req.source, c);
                             }
 
                             // Update the registration properties for this client.
-                            c.vehicle.setVehicleService(req.source);
+                            if (!req.source.equals(c.vehicle.getVehicleService()))
+                                c.vehicle.setVehicleService(req.source);
                             c.name = req.stream.readUTF();
                             c.ttl = UdpConstants.REGISTRATION_TIMEOUT_COUNT;
                         }
