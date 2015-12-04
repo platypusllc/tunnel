@@ -377,7 +377,9 @@ public class UdpVehicleService2 implements UdpServer.RequestHandler {
                     };
 
                     _vehicleServer.setSensorType(req.stream.readInt(),
-                            VehicleServer.SensorType.values()[req.stream.readByte()], obs);
+                            VehicleServer.SensorType.values()[
+                                    Math.max(req.stream.readByte(),
+                                             VehicleServer.SensorType.values().length - 1)], obs);
                     break;
                 }
                 case CMD_GET_SENSOR_TYPE: {
